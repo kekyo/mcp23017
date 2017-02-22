@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <malloc.h>
 #include <memory.h>
+#include <time.h>
 
 #include <wiringPi.h>
 #include <wiringPiI2C.h>
@@ -108,6 +109,9 @@ int main()
 	int syncDelay, syncCount;
 	long currentSync = 0;
 	unsigned char address, data;
+	clock_t c1, c2;
+	double cd;
+	int count = 0;
 
 	fd = open("acid_shota.s98", O_RDONLY);
 	fstat(fd, &s);
@@ -138,6 +142,8 @@ int main()
 	write_controlbus(fd, 0);
 
 	unsigned char* pData = pBuffer + pHeader->dumpDataIndex;
+
+	c1 = clock();
 
 	while (1)
 	{
@@ -176,6 +182,14 @@ int main()
 				printf("Unknown opcode: %02x\n", *pData);
 				pData += 3;
 				break;
+		}
+		count++;
+		if (count == 10000)
+		{
+			count = 0;
+			c2 = clock();
+			cd = (double)(c2 - c1) / CLOCKS_PER_SEC;
+			printf("%f OPS/sec\n", 10000 / cd);
 		}
 	}
 }
