@@ -20,6 +20,8 @@
 #define RD 0x04
 #define RST 0x08
 
+#define YM2151BUSY 0x80
+
 static void set_databusdirection(int fd, int isout)
 {
 	if (isout) wiringPiI2CWriteReg8(fd, IODIRA, 0x00);
@@ -29,13 +31,13 @@ static void set_databusdirection(int fd, int isout)
 static void write_databus(int fd, unsigned char data)
 {
 	wiringPiI2CWriteReg8(fd, GPIOA, data);
-	delay(1);
+	//delayMicroseconds(1);
 }
 
 static void write_controlbus(int fd, unsigned char controls)
 {
 	wiringPiI2CWriteReg8(fd, GPIOB, controls ^ WR ^ RD ^ RST);
-	delay(1);
+	//delayMicroseconds(1);
 }
 
 static void write_ym2151(int fd, unsigned char address, unsigned char data)
@@ -51,15 +53,10 @@ static void write_ym2151(int fd, unsigned char address, unsigned char data)
 	set_databusdirection(fd, 0);
 }
 
-static unsigned char read_ym2151(int fd, unsigned char address)
+static unsigned char read_ym2151(int fd)
 {
 	unsigned char result;
 
-	set_databusdirection(fd, 1);
-	write_databus(fd, address);
-	write_controlbus(fd, WR);
-	write_controlbus(fd, 0);
-	set_databusdirection(fd, 0);
 	write_controlbus(fd, A0);
 	write_controlbus(fd, A0 | RD);
 	result = wiringPiI2CReadReg8(fd, GPIOA);
@@ -134,8 +131,8 @@ int main()
 	fd = wiringPiI2CSetup(ADDRESS);
 	if (fd == -1) return 1;
 
-	wiringPiI2CWriteReg16(fd, IODIRA, 0xff);
-	wiringPiI2CWriteReg16(fd, IODIRB, 0x00);
+	wiringPiI2CWriteReg8(fd, IODIRA, 0xff);
+	wiringPiI2CWriteReg8(fd, IODIRB, 0x00);
 
 	write_controlbus(fd, RST);
 	write_controlbus(fd, 0);
@@ -168,6 +165,12 @@ int main()
 				data = *pData;
 				pData++;
 				write_ym2151(fd, address, data);
+				while (1)
+				{
+					data = read_ym2151(fd);
+					if ((data & YM2151BUSY) == 0) break;
+					printf("BUSY\n");
+				}	
 				break;
 			default:
 				printf("Unknown opcode: %02x\n", *pData);
