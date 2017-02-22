@@ -108,6 +108,9 @@ int main()
 	printf("TagIndex = %08x\r\n", pHeader->tagIndex);
 	printf("DumpDataIndex = %08x\r\n", pHeader->dumpDataIndex);
 	printf("LoopPointIndex = %08x\r\n", pHeader->loopPointIndex);
+	printf("DeviceCount = %08x\r\n", pHeader->deviceCount);
+	printf("DeviceType0 = %08x\r\n", pHeader->deviceInfo[0].deviceType);
+	printf("DeviceClock0 = %uHz\r\n", pHeader->deviceInfo[0].clock);
 
 	fd = wiringPiI2CSetup(ADDRESS);
 	if (fd == -1) return 1;
@@ -120,9 +123,9 @@ int main()
 
 	while (1)
 	{
-		wiringPiI2CWriteReg8(fd, GPIOA, 0x01);
+		write_controlbus(fd, RD);
 		delay(200);
-		wiringPiI2CWriteReg8(fd, GPIOA, 0x00);
+		write_controlbus(fd, 0);
 		delay(200);
 	}
 }
