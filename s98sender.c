@@ -67,6 +67,19 @@ static unsigned char read_ym2151(int fd, unsigned char address)
 	return result;
 }
 
+static int getvv(unsigned char** p)
+{
+	int s = 0, n = 0;
+	(*p)--;
+	do
+	{
+		n |= (*(++(*p)) & 0x7f) << s;
+		s += 7;
+	}
+	while (*(*p) & 0x80);
+	return n + 2;
+}
+
 typedef struct
 {
 	unsigned int deviceType;
@@ -95,6 +108,9 @@ int main()
 	struct stat s;
 	unsigned char* pBuffer;
 	S98Header* pHeader;
+	int syncDelay, syncCount;
+	long currentSync = 0;
+	unsigned char address, data;
 
 	fd = open("acid_shota.s98", O_RDONLY);
 	fstat(fd, &s);
@@ -105,12 +121,15 @@ int main()
 
 	pHeader = (S98Header*)pBuffer;
 
-	printf("TagIndex = %08x\r\n", pHeader->tagIndex);
-	printf("DumpDataIndex = %08x\r\n", pHeader->dumpDataIndex);
-	printf("LoopPointIndex = %08x\r\n", pHeader->loopPointIndex);
-	printf("DeviceCount = %08x\r\n", pHeader->deviceCount);
-	printf("DeviceType0 = %08x\r\n", pHeader->deviceInfo[0].deviceType);
-	printf("DeviceClock0 = %uHz\r\n", pHeader->deviceInfo[0].clock);
+	printf("TagIndex = %08x\n", pHeader->tagIndex);
+	printf("DumpDataIndex = %08x\n", pHeader->dumpDataIndex);
+	printf("LoopPointIndex = %08x\n", pHeader->loopPointIndex);
+	printf("DeviceCount = %08x\n", pHeader->deviceCount);
+	printf("DeviceType0 = %08x\n", pHeader->deviceInfo[0].deviceType);
+	printf("DeviceClock0 = %uHz\n", pHeader->deviceInfo[0].clock);
+
+	syncDelay = (int)(((long long)pHeader->timerInfoNumerator) * 1000 / pHeader->timerInfoDenominator);
+	printf("Sync = %d / %d = %dmsec\r\n", pHeader->timerInfoNumerator, pHeader->timerInfoDenominator, syncDelay);
 
 	fd = wiringPiI2CSetup(ADDRESS);
 	if (fd == -1) return 1;
@@ -121,12 +140,40 @@ int main()
 	write_controlbus(fd, RST);
 	write_controlbus(fd, 0);
 
+	unsigned char* pData = pBuffer + pHeader->dumpDataIndex;
+
 	while (1)
 	{
-		write_controlbus(fd, RD);
-		delay(200);
-		write_controlbus(fd, 0);
-		delay(200);
+		switch (*pData)
+		{
+			case 0xff:
+				// TODO: Calculate by between start and current time.
+				delay(syncDelay);
+				pData++;
+				//printf("Sync\n");
+				break;
+			case 0xfe:
+				// TODO: Calculate by between start and current time.
+				syncCount = getvv(&pData);
+				//printf("Sync[%d]\n", syncCount);
+				for (int i = 0; i < syncCount; i++) delay(syncDelay);
+				break;
+			case 0xfd:
+				printf("EOF\n");
+				break;
+			case 0x00:
+				pData++;
+				address = *pData;
+				pData++;
+				data = *pData;
+				pData++;
+				write_ym2151(fd, address, data);
+				break;
+			default:
+				printf("Unknown opcode: %02x\n", *pData);
+				pData += 3;
+				break;
+		}
 	}
 }
 
