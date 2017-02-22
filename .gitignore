@@ -30,3 +30,7 @@
 *.exe
 *.out
 *.app
+
+# Sample s98 file.
+acid_shota.s98
+
