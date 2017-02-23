@@ -6,6 +6,7 @@
 #include <malloc.h>
 #include <memory.h>
 #include <time.h>
+#include <sys/time.h>
 
 #include <wiringPi.h>
 #include <wiringPiI2C.h>
@@ -23,22 +24,27 @@
 
 #define YM2151BUSY 0x80
 
+static unsigned int pcount = 0;
+
 static void set_databusdirection(int fd, int isout)
 {
 	if (isout) wiringPiI2CWriteReg8(fd, IODIRA, 0x00);
 	else wiringPiI2CWriteReg8(fd, IODIRA, 0xff);
+	pcount++;
 }
 
 static void write_databus(int fd, unsigned char data)
 {
 	wiringPiI2CWriteReg8(fd, GPIOA, data);
 	//delayMicroseconds(1);
+	pcount++;
 }
 
 static void write_controlbus(int fd, unsigned char controls)
 {
 	wiringPiI2CWriteReg8(fd, GPIOB, controls ^ WR ^ RD ^ RST);
 	//delayMicroseconds(1);
+	pcount++;
 }
 
 static void write_ym2151(int fd, unsigned char address, unsigned char data)
@@ -61,11 +67,12 @@ static unsigned char read_ym2151(int fd)
 	write_controlbus(fd, A0);
 	write_controlbus(fd, A0 | RD);
 	result = wiringPiI2CReadReg8(fd, GPIOA);
+	pcount++;
 	write_controlbus(fd, 0);
 	return result;
 }
 
-static int getvv(unsigned char** p)
+static int getvv(const unsigned char** p)
 {
 	int s = 0, n = 0;
 	(*p)--;
@@ -102,25 +109,18 @@ typedef struct
 
 int main()
 {
-	int fd;
-	struct stat s;
-	unsigned char* pBuffer;
-	S98Header* pHeader;
-	int syncDelay, syncCount;
-	long currentSync = 0;
-	unsigned char address, data;
-	clock_t c1, c2;
-	double cd;
-	int count = 0;
+	int fd = open("acid_shota.s98", O_RDONLY);
 
-	fd = open("acid_shota.s98", O_RDONLY);
+	struct stat s;
 	fstat(fd, &s);
-	pBuffer = (unsigned char*)malloc((int)s.st_size + 1);
+
+	unsigned char* pBuffer = (unsigned char*)malloc((int)s.st_size + 1);
 	memset(pBuffer, 0, (int)s.st_size + 1);
 	read(fd, pBuffer, s.st_size);
+
 	close(fd);
 
-	pHeader = (S98Header*)pBuffer;
+	const S98Header* pHeader = (const S98Header*)pBuffer;
 
 	printf("TagIndex = %08x\n", pHeader->tagIndex);
 	printf("DumpDataIndex = %08x\n", pHeader->dumpDataIndex);
@@ -129,11 +129,11 @@ int main()
 	printf("DeviceType0 = %08x\n", pHeader->deviceInfo[0].deviceType);
 	printf("DeviceClock0 = %uHz\n", pHeader->deviceInfo[0].clock);
 
-	syncDelay = (int)(((long long)pHeader->timerInfoNumerator) * 1000 / pHeader->timerInfoDenominator);
+	int syncDelay = (int)(((long long)pHeader->timerInfoNumerator) * 1000 / pHeader->timerInfoDenominator);
 	printf("Sync = %d / %d = %dmsec\r\n", pHeader->timerInfoNumerator, pHeader->timerInfoDenominator, syncDelay);
 
-	fd = wiringPiI2CSetup(ADDRESS);
-	if (fd == -1) return 1;
+	int wfd = wiringPiI2CSetup(ADDRESS);
+	if (wfd == -1) return 1;
 
 	wiringPiI2CWriteReg8(fd, IODIRA, 0xff);
 	wiringPiI2CWriteReg8(fd, IODIRB, 0x00);
@@ -141,10 +141,12 @@ int main()
 	write_controlbus(fd, RST);
 	write_controlbus(fd, 0);
 
-	unsigned char* pData = pBuffer + pHeader->dumpDataIndex;
+	const unsigned char* pData = pBuffer + pHeader->dumpDataIndex;
 
-	c1 = clock();
+	struct timeval sv, ev;
+	gettimeofday(&sv, NULL);
 
+	int count = 0;
 	while (1)
 	{
 		switch (*pData)
@@ -156,40 +158,47 @@ int main()
 				//printf("Sync\n");
 				break;
 			case 0xfe:
-				// TODO: Calculate by between start and current time.
-				syncCount = getvv(&pData);
-				//printf("Sync[%d]\n", syncCount);
-				for (int i = 0; i < syncCount; i++) delay(syncDelay);
+				{
+					// TODO: Calculate by between start and current time.
+					int syncCount = getvv(&pData);
+					//printf("Sync[%d]\n", syncCount);
+					delay(syncDelay * syncCount);
+				}
 				break;
 			case 0xfd:
 				printf("EOF\n");
 				break;
 			case 0x00:
-				pData++;
-				address = *pData;
-				pData++;
-				data = *pData;
-				pData++;
-				write_ym2151(fd, address, data);
-				while (1)
 				{
-					data = read_ym2151(fd);
-					if ((data & YM2151BUSY) == 0) break;
-					printf("BUSY\n");
-				}	
+					pData++;
+					unsigned char address = *pData;
+					pData++;
+					unsigned char data = *pData;
+					pData++;
+					write_ym2151(fd, address, data);
+					while (1)
+					{
+						data = read_ym2151(fd);
+						if ((data & YM2151BUSY) == 0) break;
+						printf("BUSY\n");
+					}	
+				}
 				break;
 			default:
 				printf("Unknown opcode: %02x\n", *pData);
 				pData += 3;
 				break;
 		}
+
 		count++;
 		if (count == 10000)
 		{
+			gettimeofday(&ev, NULL);
+			double differSec = (ev.tv_sec - sv.tv_sec) + (ev.tv_usec - sv.tv_usec) * 1.0e-6;
+			printf("%u OPS : %f OPS/sec\n", pcount, pcount / differSec);
 			count = 0;
-			c2 = clock();
-			cd = (double)(c2 - c1) / CLOCKS_PER_SEC;
-			printf("%f OPS/sec\n", 10000 / cd);
+			pcount = 0;
+			sv = ev;
 		}
 	}
 }
