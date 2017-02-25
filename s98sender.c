@@ -126,8 +126,16 @@ int main()
 				}
 				break;
 			case 0xfd:
-				printf("EOF\n");
-				return 0;
+				{
+					if (pHeader->loopPointIndex == 0)
+					{
+						printf("EOF\n");
+						return 0;
+					}
+					pData = pBuffer + pHeader->loopPointIndex;
+					printf("Loop.\n");
+				}
+				break;
 			case 0x00:
 				{
 					pData++;
