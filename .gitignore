@@ -34,3 +34,5 @@
 # Sample s98 file.
 acid_shota.s98
 
+mcp23017pulse
+s98sender

@@ -11,65 +11,14 @@
 #include <wiringPi.h>
 #include <wiringPiI2C.h>
 
-#define IODIRA   0x00     // MCP23017 address of I/O direction
-#define IODIRB   0x01     // MCP23017 address of I/O direction
-#define GPIOA    0x12     // MCP23017 address of GP Value
-#define GPIOB    0x13     // MCP23017 address of GP Value
-#define ADDRESS  0x20     // MCP23017 I2C address
-
-#define A0 0x01
-#define WR 0x02
-#define RD 0x04
-#define RST 0x08
-
-#define YM2151BUSY 0x80
+#define ADDRESS  0x20     // AVR address
 
 static unsigned int pcount = 0;
 
-static void set_databusdirection(int fd, int isout)
+static void write_data(int fd, unsigned char address, unsigned char data)
 {
-	if (isout) wiringPiI2CWriteReg8(fd, IODIRA, 0x00);
-	else wiringPiI2CWriteReg8(fd, IODIRA, 0xff);
+	wiringPiI2CWriteReg8(fd, address, data);
 	pcount++;
-}
-
-static void write_databus(int fd, unsigned char data)
-{
-	wiringPiI2CWriteReg8(fd, GPIOA, data);
-	//delayMicroseconds(1);
-	pcount++;
-}
-
-static void write_controlbus(int fd, unsigned char controls)
-{
-	wiringPiI2CWriteReg8(fd, GPIOB, controls ^ WR ^ RD ^ RST);
-	//delayMicroseconds(1);
-	pcount++;
-}
-
-static void write_ym2151(int fd, unsigned char address, unsigned char data)
-{
-	set_databusdirection(fd, 1);
-	write_databus(fd, address);
-	write_controlbus(fd, WR);
-	write_controlbus(fd, 0);
-	write_controlbus(fd, A0);
-	write_databus(fd, data);
-	write_controlbus(fd, A0 | WR);
-	write_controlbus(fd, A0);
-	set_databusdirection(fd, 0);
-}
-
-static unsigned char read_ym2151(int fd)
-{
-	unsigned char result;
-
-	write_controlbus(fd, A0);
-	write_controlbus(fd, A0 | RD);
-	result = wiringPiI2CReadReg8(fd, GPIOA);
-	pcount++;
-	write_controlbus(fd, 0);
-	return result;
 }
 
 static int getvv(const unsigned char** p)
@@ -107,6 +56,24 @@ typedef struct
 	DeviceInfo deviceInfo[1];
 } S98Header;
 
+static void Sync(struct timeval* pt, double syncDelayMSec, int multiply)
+{
+	struct timeval now;
+	gettimeofday(&now, NULL);
+
+	double differMSec = (now.tv_sec - pt->tv_sec) * 1000.0 + (now.tv_usec - pt->tv_usec) * 0.001;
+	int delayTime = (int)((syncDelayMSec - differMSec) + syncDelayMSec * (multiply - 1));
+
+	//printf("%f : %f : %d : %d\n", syncDelayMSec, differMSec, multiply, delayTime);
+
+	if (delayTime >= 1)
+	{
+		delay(delayTime);
+	}
+
+	*pt = now;
+}
+
 int main()
 {
 	int fd = open("acid_shota.s98", O_RDONLY);
@@ -129,22 +96,16 @@ int main()
 	printf("DeviceType0 = %08x\n", pHeader->deviceInfo[0].deviceType);
 	printf("DeviceClock0 = %uHz\n", pHeader->deviceInfo[0].clock);
 
-	int syncDelay = (int)(((long long)pHeader->timerInfoNumerator) * 1000 / pHeader->timerInfoDenominator);
-	printf("Sync = %d / %d = %dmsec\r\n", pHeader->timerInfoNumerator, pHeader->timerInfoDenominator, syncDelay);
+	double syncDelayMSec = ((double)pHeader->timerInfoNumerator) * 1000.0 / pHeader->timerInfoDenominator;
+	printf("Sync = %d / %d = %fmsec\r\n", pHeader->timerInfoNumerator, pHeader->timerInfoDenominator, syncDelayMSec);
 
-	int wfd = wiringPiI2CSetup(ADDRESS);
-	if (wfd == -1) return 1;
-
-	wiringPiI2CWriteReg8(fd, IODIRA, 0xff);
-	wiringPiI2CWriteReg8(fd, IODIRB, 0x00);
-
-	write_controlbus(fd, RST);
-	write_controlbus(fd, 0);
+	int ifd = wiringPiI2CSetup(ADDRESS);
 
 	const unsigned char* pData = pBuffer + pHeader->dumpDataIndex;
 
-	struct timeval sv, ev;
+	struct timeval sv, ev, sync;
 	gettimeofday(&sv, NULL);
+	sync = sv;
 
 	int count = 0;
 	while (1)
@@ -152,22 +113,21 @@ int main()
 		switch (*pData)
 		{
 			case 0xff:
-				// TODO: Calculate by between start and current time.
-				delay(syncDelay);
+				Sync(&sync, syncDelayMSec, 1);
 				pData++;
-				//printf("Sync\n");
 				break;
 			case 0xfe:
 				{
-					// TODO: Calculate by between start and current time.
 					int syncCount = getvv(&pData);
-					//printf("Sync[%d]\n", syncCount);
-					delay(syncDelay * syncCount);
+					if (syncCount >= 1)
+					{
+						Sync(&sync, syncDelayMSec, syncCount);
+					}
 				}
 				break;
 			case 0xfd:
 				printf("EOF\n");
-				break;
+				return 0;
 			case 0x00:
 				{
 					pData++;
@@ -175,13 +135,7 @@ int main()
 					pData++;
 					unsigned char data = *pData;
 					pData++;
-					write_ym2151(fd, address, data);
-					while (1)
-					{
-						data = read_ym2151(fd);
-						if ((data & YM2151BUSY) == 0) break;
-						printf("BUSY\n");
-					}	
+					write_data(ifd, address, data);
 				}
 				break;
 			default:
