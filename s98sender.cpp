@@ -10,9 +10,12 @@
 #include <sys/time.h>
 #include <sys/ioctl.h>
 
+#include <vector>
+
 #include <wiringPi.h>
 #include <wiringPiI2C.h>
 
+//#include <i2c/smbus.h>
 
 /////////////////////////////////////////////
 
@@ -34,12 +37,12 @@ static int i2c_write(int fd, uint8_t size, const uint8_t* pData)
 {
 	i2c_smbus_block_data blockData;
 	blockData.size = size;
-	memcpy(blockData.data, pData, size);
+	memcpy(blockData.data, pData, blockData.size);
 
 	i2c_smbus_ioctl_args args;
-	args.readWrite = 0;	// SMBUS_WRITE
+	args.readWrite = 0;		// SMBUS_WRITE
 	args.command = 0;
-	args.size = 5;		// BLOCK_DATA
+	args.size = 5;			// BLOCK_DATA
 	args.pBlockData = &blockData;
 	
 	return ioctl(fd, 0x0720, &args);
@@ -52,14 +55,20 @@ static int i2c_write(int fd, uint8_t size, const uint8_t* pData)
 
 static unsigned int pcount = 0;
 
-static void write_data(int fd, uint8_t address, uint8_t data)
+typedef struct
 {
-	//wiringPiI2CWriteReg8(fd, address, data);
-	uint8_t blockData[2];
-	blockData[0] = address;
-	blockData[1] = data;
-	i2c_write(fd, 2, blockData);
-	pcount++;
+	uint8_t address;
+	uint8_t data;
+} ym2151packet;
+
+static void write_data(int fd, const std::vector<ym2151packet>& packet)
+{
+	int size = packet.size();
+	if (size >= 1)
+	{
+		i2c_write(fd, size * sizeof(ym2151packet), &packet[0].address);
+		pcount += size;
+	}
 }
 
 static int getvv(const uint8_t** p)
@@ -103,7 +112,7 @@ static void Sync(struct timeval* pt, double syncDelayUSec, int multiply)
 	gettimeofday(&now, NULL);
 
 	double differUSec = (now.tv_sec - pt->tv_sec) * 1000000.0 + (now.tv_usec - pt->tv_usec);
-	int delayUSec = (int)((syncDelayUSec - differUSec) + syncDelayUSec * (multiply - 1));
+	int delayUSec = (int)((syncDelayUSec - differUSec) + syncDelayUSec * (multiply - 0));
 
 	//printf("%f : %f : %d : %d\n", syncDelayUSec, differUSec, multiply, delayUSec);
 
@@ -147,6 +156,8 @@ int main()
 
 	const uint8_t* pData = pBuffer + pHeader->dumpDataIndex;
 
+	std::vector<ym2151packet> buffer;
+
 	struct timeval sv, ev, sync;
 	gettimeofday(&sv, NULL);
 	sync = sv;
@@ -157,11 +168,24 @@ int main()
 		switch (*pData)
 		{
 			case 0xff:
+				if (buffer.size() >= 1)
+				{
+					write_data(ifd, buffer);;
+					buffer.clear();
+				}
+
 				Sync(&sync, syncDelayUSec, 1);
 				pData++;
+
 				break;
 			case 0xfe:
 				{
+					if (buffer.size() >= 1)
+					{
+						write_data(ifd, buffer);;
+						buffer.clear();
+					}
+
 					int syncCount = getvv(&pData) + 1;
 					if (syncCount >= 1)
 					{
@@ -176,18 +200,27 @@ int main()
 						printf("EOF\n");
 						return 0;
 					}
+
 					pData = pBuffer + pHeader->loopPointIndex;
+
 					printf("Loop.\n");
 				}
 				break;
 			default:
 				{
+					if (buffer.size() >= 16)
+					{
+						write_data(ifd, buffer);;
+						buffer.clear();
+					}
+
+					ym2151packet packet;
 					pData++;
-					unsigned char address = *pData;
+					packet.address = *pData;
 					pData++;
-					unsigned char data = *pData;
+					packet.data = *pData;
 					pData++;
-					write_data(ifd, address, data);
+					buffer.push_back(packet);
 				}
 				break;
 		}
