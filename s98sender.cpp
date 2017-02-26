@@ -36,13 +36,13 @@ typedef struct
 static int i2c_write(int fd, uint8_t size, const uint8_t* pData)
 {
 	i2c_smbus_block_data blockData;
-	blockData.size = size;
-	memcpy(blockData.data, pData, blockData.size);
+	blockData.size = size - 1;
+	memcpy(blockData.data, pData + 1, blockData.size);
 
 	i2c_smbus_ioctl_args args;
 	args.readWrite = 0;		// SMBUS_WRITE
-	args.command = 0;
-	args.size = 5;			// BLOCK_DATA
+	args.command = pData[0];
+	args.size = 8;			// I2C_BLOCK_DATA (not include pec)
 	args.pBlockData = &blockData;
 	
 	return ioctl(fd, 0x0720, &args);
@@ -53,6 +53,7 @@ static int i2c_write(int fd, uint8_t size, const uint8_t* pData)
 
 #define ADDRESS  0x20     // AVR address
 
+static unsigned int wcount = 0;
 static unsigned int pcount = 0;
 
 typedef struct
@@ -67,6 +68,7 @@ static void write_data(int fd, const std::vector<ym2151packet>& packet)
 	if (size >= 1)
 	{
 		i2c_write(fd, size * sizeof(ym2151packet), &packet[0].address);
+		wcount++;
 		pcount += size;
 	}
 }
@@ -112,16 +114,17 @@ static void Sync(struct timeval* pt, double syncDelayUSec, int multiply)
 	gettimeofday(&now, NULL);
 
 	double differUSec = (now.tv_sec - pt->tv_sec) * 1000000.0 + (now.tv_usec - pt->tv_usec);
-	int delayUSec = (int)((syncDelayUSec - differUSec) + syncDelayUSec * (multiply - 0));
+	int delayUSec = (int)((syncDelayUSec - differUSec) + syncDelayUSec * (multiply - 1));
 
 	//printf("%f : %f : %d : %d\n", syncDelayUSec, differUSec, multiply, delayUSec);
 
 	if (delayUSec > 0)
 	{
 		delayMicroseconds(delayUSec);
+		// TODO: Add differ to now
 	}
 
-	*pt = now;
+	gettimeofday(pt, NULL);
 }
 
 int main()
@@ -186,7 +189,7 @@ int main()
 						buffer.clear();
 					}
 
-					int syncCount = getvv(&pData) + 1;
+					int syncCount = getvv(&pData);
 					if (syncCount >= 1)
 					{
 						Sync(&sync, syncDelayUSec, syncCount);
@@ -208,7 +211,7 @@ int main()
 				break;
 			default:
 				{
-					if (buffer.size() >= 16)
+					if (buffer.size() >= 8)
 					{
 						write_data(ifd, buffer);;
 						buffer.clear();
@@ -230,9 +233,11 @@ int main()
 		{
 			gettimeofday(&ev, NULL);
 			double differSec = (ev.tv_sec - sv.tv_sec) + (ev.tv_usec - sv.tv_usec) * 1.0e-6;
-			printf("%u OPS : %f OPS/sec\n", pcount, pcount / differSec);
+			printf("%u ops/%f sec = %f ops/sec\n", pcount, differSec, pcount / differSec);
+			printf("%u send/%f sec = %f send/sec\n", wcount, differSec, wcount / differSec);
 			count = 0;
 			pcount = 0;
+			wcount = 0;
 			sv = ev;
 		}
 	}
